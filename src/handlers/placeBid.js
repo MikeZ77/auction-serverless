@@ -2,12 +2,15 @@ import AWS from 'aws-sdk';
 import commonMiddleware from '../lib/commonMiddleware';
 import createError from 'http-errors';
 import { getAuctionById } from './getAuction';
+import validator from '@middy/validator';
+import placeBidSchema from '../lib/schemas/placeBidSchema';
 
 const dynamodb = new AWS.DynamoDB.DocumentClient();
 
 async function placeBid(event, context) {
   const { id } = event.pathParameters; 
   const { amount } = event.body;
+  const { email } = event.requestContext.authorizer;
 
   const auction = await getAuctionById(id);
 
@@ -19,12 +22,21 @@ async function placeBid(event, context) {
     throw new createError.Forbidden(`You're bid must be higher than ${auction.highestBid.amount}!`);
   }
 
+  if (email === auction.seller) {
+    throw new createError.Forbidden(`You cannot bid on you're own auctions`);
+  }
+
+  if (email === auction.highestBid.bidder) {
+    throw new createError.Forbidden(`You are already the highest bidder`);
+  }
+
   const params = {
     TableName: process.env.AUCTIONS_TABLE_NAME,
     Key: { id },
-    UpdateExpression: 'set highestBid.amount = :amount',
+    UpdateExpression: 'set highestBid.amount = :amount, highestBid.bidder = :bidder',
     ExpressionAttributeValues: {
-      ':amount': amount
+      ':amount': amount,
+      ':bidder': email
     },
     ReturnValues: 'ALL_NEW',
   };
@@ -44,4 +56,11 @@ async function placeBid(event, context) {
   };
 }
 
-export const handler = commonMiddleware(placeBid);
+export const handler = commonMiddleware(placeBid).use(
+  validator({
+    inputSchema: placeBidSchema,
+    ajvOptions: {
+      useDefaults: true,
+      strict: false,
+    },
+  }));
